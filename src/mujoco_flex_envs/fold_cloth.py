@@ -11,6 +11,25 @@ import numpy as np
 import yaml
 
 
+PANDA_JOINT_RANGES = np.asarray(
+    [
+        [-2.8973, 2.8973],
+        [-1.7628, 1.7628],
+        [-2.8973, 2.8973],
+        [-3.0718, -0.0698],
+        [-2.8973, 2.8973],
+        [-0.0175, 3.7525],
+        [-2.8973, 2.8973],
+    ],
+    dtype=np.float64,
+)
+PANDA_HOME_QPOS = np.asarray(
+    [0.212422, 0.362907, -0.00733391, -1.9649, -0.0198034, 2.37451, -1.50499],
+    dtype=np.float64,
+)
+PANDA_MODEL_NAMES = {"panda", "panda_mesh", "franka", "franka_panda"}
+
+
 @dataclass
 class FoldClothConfig:
     seed: int
@@ -46,10 +65,40 @@ def _cloth_vertex_body_name(x_idx: int, y_idx: int, grid_y: int) -> str:
     return f"cloth_{x_idx * grid_y + y_idx}"
 
 
+def _robot_model_name(robot_cfg: dict[str, Any]) -> str:
+    return str(robot_cfg.get("model", "cartesian")).lower()
+
+
+def _is_panda_model(robot_cfg: dict[str, Any]) -> bool:
+    return _robot_model_name(robot_cfg) in PANDA_MODEL_NAMES
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[2]
+
+
+def _panda_mesh_dir() -> Path:
+    return (_repo_root() / "assets" / "franka_panda" / "meshes").resolve()
+
+
 def _edge_anchor(size_x: float, size_y: float, x_side: str, y_fraction: float, z: float) -> np.ndarray:
     x = -0.5 * size_x if x_side == "left" else 0.5 * size_x
     y = -0.5 * size_y + float(y_fraction) * size_y
     return np.array([x, y, z], dtype=np.float64)
+
+
+def _initial_grasp_targets(config: FoldClothConfig) -> np.ndarray:
+    size_x, size_y = [float(v) for v in config.cloth["size"]]
+    cloth_z = max(
+        float(config.cloth.get("radius", 0.004)) * 2.0,
+        float(config.cloth.get("thickness", 0.0008)) * 6.0,
+    )
+    gripper = config.gripper
+    robot_cfg = config.robot or {}
+    y_fracs = robot_cfg.get("grasp_y_fraction", gripper.get("right_edge_y_fraction", [0.15, 0.85]))
+    if len(y_fracs) != 2:
+        raise ValueError("robot.grasp_y_fraction must contain exactly two values for the dual-gripper demo")
+    return np.asarray([_edge_anchor(size_x, size_y, "right", frac, cloth_z) for frac in y_fracs], dtype=np.float64)
 
 
 def _smoothstep(value: float) -> float:
@@ -159,11 +208,119 @@ def _cartesian_robot_xml(
     return body, actuator
 
 
+def _panda_assets_xml() -> str:
+    meshes = []
+    for idx in range(8):
+        meshes.append(f'    <mesh name="panda_link{idx}" file="link{idx}.stl"/>')
+        meshes.append(f'    <mesh name="panda_link{idx}_vis" file="link{idx}_vis.stl"/>')
+    meshes.extend(
+        [
+            '    <mesh name="panda_hand" file="hand.stl"/>',
+            '    <mesh name="panda_hand_vis" file="hand_vis.stl"/>',
+            '    <mesh name="panda_finger_plastic" file="3dprinted_finger.stl"/>',
+        ]
+    )
+    return "\n".join(meshes)
+
+
+def _coerce_pair(value: Any, default: list[list[float]]) -> list[Any]:
+    if value is None:
+        return default
+    if isinstance(value, list) and len(value) == 2:
+        default_uses_nested_values = isinstance(default[0], list)
+        value_uses_nested_values = any(isinstance(item, list) for item in value)
+        if default_uses_nested_values == value_uses_nested_values:
+            return value
+    return [value, value]
+
+
+def _panda_robot_xml(
+    name: str,
+    base_pos: np.ndarray,
+    base_yaw: float,
+    rgba: str,
+    grip_radius: float,
+    robot_cfg: dict[str, Any],
+) -> tuple[str, str]:
+    kp = float(robot_cfg.get("kp", 220.0))
+    damping = float(robot_cfg.get("joint_damping", 3.0))
+    armature = float(robot_cfg.get("joint_armature", 0.04))
+    ranges = PANDA_JOINT_RANGES
+    joint_attrs = [
+        f'name="{name}_j{idx + 1}" pos="0 0 0" axis="0 0 1" limited="true" '
+        f'range="{ranges[idx, 0]:.8f} {ranges[idx, 1]:.8f}" '
+        f'damping="{damping:.8f}" armature="{armature:.8f}"'
+        for idx in range(7)
+    ]
+    body = f"""    <body name="{name}_base" pos="{_vec(base_pos)}" euler="0 0 {base_yaw:.8f}">
+      <geom name="{name}_link0_visual" type="mesh" contype="0" conaffinity="0" group="1" rgba="0.92 0.92 0.90 1" mesh="panda_link0_vis"/>
+      <geom name="{name}_link0_collision" type="mesh" contype="0" conaffinity="0" rgba="0.10 0.12 0.14 0.35" mesh="panda_link0"/>
+      <body name="{name}_link1" pos="0 0 0.333">
+        <joint {joint_attrs[0]}/>
+        <geom name="{name}_link1_visual" type="mesh" contype="0" conaffinity="0" group="1" rgba="0.92 0.92 0.90 1" mesh="panda_link1_vis"/>
+        <geom name="{name}_link1_collision" type="mesh" contype="0" conaffinity="0" rgba="0.10 0.12 0.14 0.35" mesh="panda_link1"/>
+        <body name="{name}_link2" pos="0 0 0" quat="0.707107 -0.707107 0 0">
+          <joint {joint_attrs[1]}/>
+          <geom name="{name}_link2_visual" type="mesh" contype="0" conaffinity="0" group="1" rgba="0.92 0.92 0.90 1" mesh="panda_link2_vis"/>
+          <geom name="{name}_link2_collision" type="mesh" contype="0" conaffinity="0" rgba="0.10 0.12 0.14 0.35" mesh="panda_link2"/>
+          <body name="{name}_link3" pos="0 -0.316 0" quat="0.707107 0.707107 0 0">
+            <joint {joint_attrs[2]}/>
+            <geom name="{name}_link3_visual" type="mesh" contype="0" conaffinity="0" group="1" rgba="0.92 0.92 0.90 1" mesh="panda_link3_vis"/>
+            <geom name="{name}_link3_collision" type="mesh" contype="0" conaffinity="0" rgba="0.10 0.12 0.14 0.35" mesh="panda_link3"/>
+            <body name="{name}_link4" pos="0.0825 0 0" quat="0.707107 0.707107 0 0">
+              <joint {joint_attrs[3]}/>
+              <geom name="{name}_link4_visual" type="mesh" contype="0" conaffinity="0" group="1" rgba="0.92 0.92 0.90 1" mesh="panda_link4_vis"/>
+              <geom name="{name}_link4_collision" type="mesh" contype="0" conaffinity="0" rgba="0.10 0.12 0.14 0.35" mesh="panda_link4"/>
+              <body name="{name}_link5" pos="-0.0825 0.384 0" quat="0.707107 -0.707107 0 0">
+                <joint {joint_attrs[4]}/>
+                <geom name="{name}_link5_visual" type="mesh" contype="0" conaffinity="0" group="1" rgba="0.92 0.92 0.90 1" mesh="panda_link5_vis"/>
+                <geom name="{name}_link5_collision" type="mesh" contype="0" conaffinity="0" rgba="0.10 0.12 0.14 0.35" mesh="panda_link5"/>
+                <body name="{name}_link6" pos="0 0 0" quat="0.707107 0.707107 0 0">
+                  <joint {joint_attrs[5]}/>
+                  <geom name="{name}_link6_visual" type="mesh" contype="0" conaffinity="0" group="1" rgba="0.92 0.92 0.90 1" mesh="panda_link6_vis"/>
+                  <geom name="{name}_link6_collision" type="mesh" contype="0" conaffinity="0" rgba="0.10 0.12 0.14 0.35" mesh="panda_link6"/>
+                  <body name="{name}_link7" pos="0.088 0 0" quat="0.707107 0.707107 0 0">
+                    <joint {joint_attrs[6]}/>
+                    <geom name="{name}_link7_visual" type="mesh" contype="0" conaffinity="0" group="1" rgba="0.92 0.92 0.90 1" mesh="panda_link7_vis"/>
+                    <geom name="{name}_link7_collision" type="mesh" contype="0" conaffinity="0" rgba="0.10 0.12 0.14 0.35" mesh="panda_link7"/>
+                    <body name="{name}_right_hand" pos="0 0 0.1065" quat="0.923785 0 0 -0.382911">
+                      <body name="{name}_right_gripper" pos="0 0 0" quat="0.707107 0 0 -0.707107">
+                        <geom name="{name}_hand_visual" quat="0.707107 0 0 0.707107" type="mesh" contype="0" conaffinity="0" group="1" rgba="0.08 0.08 0.08 1" mesh="panda_hand_vis"/>
+                        <geom name="{name}_hand_collision" quat="0.707107 0 0 0.707107" type="mesh" contype="0" conaffinity="0" rgba="0.08 0.08 0.08 0.35" mesh="panda_hand"/>
+                        <body name="{name}_tool" pos="0 0 0.10377">
+                          <geom name="{name}_grip_sphere" type="sphere" size="{grip_radius:.8f}" rgba="{rgba}" contype="0" conaffinity="0"/>
+                          <site name="{name}_tip" pos="0 0 0" size="0.004" rgba="1 1 1 1"/>
+                        </body>
+                        <body name="{name}_leftfinger" pos="0 0 0.063" quat="0.707107 0 0 0.707107">
+                          <geom name="{name}_finger1_visual" type="mesh" contype="0" conaffinity="0" group="1" rgba="0.02 0.02 0.02 1" mesh="panda_finger_plastic"/>
+                        </body>
+                        <body name="{name}_rightfinger" pos="0 0 0.063" quat="0.707107 0 0 0.707107">
+                          <geom name="{name}_finger2_visual" quat="0 0 0 1" type="mesh" contype="0" conaffinity="0" group="1" rgba="0.02 0.02 0.02 1" mesh="panda_finger_plastic"/>
+                        </body>
+                      </body>
+                    </body>
+                  </body>
+                </body>
+              </body>
+            </body>
+          </body>
+        </body>
+      </body>
+    </body>"""
+    actuator = "\n".join(
+        f'    <position name="{name}_j{idx + 1}_pos" joint="{name}_j{idx + 1}" kp="{kp:.8f}" '
+        f'ctrllimited="true" ctrlrange="{ranges[idx, 0]:.8f} {ranges[idx, 1]:.8f}"/>'
+        for idx in range(7)
+    )
+    return body, actuator
+
+
 def build_mjcf(config: FoldClothConfig) -> str:
     cloth = config.cloth
     phys = config.physics
     gripper = config.gripper
     robot_cfg = config.robot or {}
+    use_panda = _is_panda_model(robot_cfg)
 
     size_x, size_y = [float(v) for v in cloth["size"]]
     grid_x, grid_y = [int(v) for v in cloth["grid"]]
@@ -174,10 +331,8 @@ def build_mjcf(config: FoldClothConfig) -> str:
     spacing_y = size_y / (grid_y - 1)
     cloth_z = max(float(cloth.get("radius", 0.004)) * 2.0, float(cloth.get("thickness", 0.0008)) * 6.0)
 
+    anchors = _initial_grasp_targets(config)
     y_fracs = robot_cfg.get("grasp_y_fraction", gripper.get("right_edge_y_fraction", [0.15, 0.85]))
-    if len(y_fracs) != 2:
-        raise ValueError("robot.grasp_y_fraction must contain exactly two values for the dual-gripper demo")
-    anchors = [_edge_anchor(size_x, size_y, "right", frac, cloth_z) for frac in y_fracs]
 
     moving_rgba_values = gripper.get("moving_rgba", [0.95, 0.22, 0.10, 1.0])
     grip_radius = float(gripper.get("radius", 0.014))
@@ -188,25 +343,56 @@ def build_mjcf(config: FoldClothConfig) -> str:
     iterations = int(phys.get("solver_iterations", 160))
     ls_iterations = int(phys.get("solver_ls_iterations", 50))
     edge_damping = float(cloth.get("edge_damping", 1.0))
+    grasp_solref = str(robot_cfg.get("grasp_solref", "0.003 1"))
+    grasp_solimp = str(robot_cfg.get("grasp_solimp", "0.90 0.98 0.001"))
+    grasp_relpose = robot_cfg.get("grasp_relpose")
+    grasp_torquescale = robot_cfg.get("grasp_torquescale")
+    grasp_extra_attrs = ""
+    if grasp_relpose is not None:
+        grasp_extra_attrs += f' relpose="{_vec(grasp_relpose, precision=8)}"'
+    if grasp_torquescale is not None:
+        grasp_extra_attrs += f' torquescale="{float(grasp_torquescale):.8f}"'
 
     robot_bodies: list[str] = []
     actuators: list[str] = []
     equalities: list[str] = []
+    panda_base_positions = _coerce_pair(
+        robot_cfg.get("base_positions"),
+        [[-0.42, -0.22, 0.0], [-0.42, 0.22, 0.0]],
+    )
+    panda_base_yaws = _coerce_pair(robot_cfg.get("base_yaw"), [0.0, 0.0])
     for idx, anchor in enumerate(anchors):
         name = f"fold_robot_{idx}"
         rgba = _vec(moving_rgba_values[idx] if isinstance(moving_rgba_values[0], list) else moving_rgba_values)
-        body, actuator = _cartesian_robot_xml(name, anchor, rgba, grip_radius, robot_cfg)
+        if use_panda:
+            body, actuator = _panda_robot_xml(
+                name,
+                np.asarray(panda_base_positions[idx], dtype=np.float64),
+                float(panda_base_yaws[idx]),
+                rgba,
+                grip_radius,
+                robot_cfg,
+            )
+        else:
+            body, actuator = _cartesian_robot_xml(name, anchor, rgba, grip_radius, robot_cfg)
         robot_bodies.append(body)
         actuators.append(actuator)
         y_idx = _fraction_to_grid_index(float(y_fracs[idx]), grid_y)
         cloth_body = _cloth_vertex_body_name(grid_x - 1, y_idx, grid_y)
         equalities.append(
             f'    <weld name="{name}_grasp" body1="{name}_tool" body2="{cloth_body}" '
-            'solref="0.003 1" solimp="0.90 0.98 0.001"/>'
+            f'solref="{grasp_solref}" solimp="{grasp_solimp}"{grasp_extra_attrs}/>'
         )
 
+    compiler_attrs = 'angle="radian"'
+    panda_assets = ""
+    if use_panda:
+        mesh_dir = _panda_mesh_dir()
+        compiler_attrs = f'angle="radian" meshdir="{mesh_dir}" inertiafromgeom="true"'
+        panda_assets = _panda_assets_xml()
+
     return f"""<mujoco model="ttt_robot_fold_cloth">
-  <compiler angle="radian"/>
+  <compiler {compiler_attrs}/>
   <option timestep="{config.timestep:.8f}" gravity="{gravity}" integrator="implicitfast" solver="CG" tolerance="1e-7" iterations="{iterations}" ls_iterations="{ls_iterations}">
     <flag energy="enable"/>
   </option>
@@ -224,10 +410,17 @@ def build_mjcf(config: FoldClothConfig) -> str:
   </visual>
   <asset>
     <texture name="table_checker" type="2d" builtin="checker" rgb1="0.78 0.78 0.74" rgb2="0.64 0.64 0.60" width="512" height="512"/>
+    <texture name="floor_checker" type="2d" builtin="checker" rgb1="0.47 0.49 0.50" rgb2="0.36 0.38 0.39" width="512" height="512"/>
     <material name="table_material" texture="table_checker" texrepeat="3 2" reflectance="0.01" shininess="0.0" specular="0.0"/>
+    <material name="floor_material" texture="floor_checker" texrepeat="5 4" reflectance="0.01" shininess="0.0" specular="0.0"/>
+    <material name="backdrop_material" rgba="0.68 0.70 0.72 1" reflectance="0.01" shininess="0.0" specular="0.0"/>
+{panda_assets}
   </asset>
   <worldbody>
     <light name="key" pos="0 -0.9 1.5" dir="0 0 -1" diffuse="0.85 0.85 0.85"/>
+    <light name="fill" pos="-0.55 -0.42 0.75" dir="0.45 0.35 -1" diffuse="0.28 0.28 0.30"/>
+    <geom name="floor_visual" type="plane" pos="0 0 -0.028" size="1.20 1.00 0.01" material="floor_material" contype="0" conaffinity="0"/>
+    <geom name="backdrop_visual" type="box" pos="0 0.44 0.26" size="0.86 0.012 0.34" material="backdrop_material" contype="0" conaffinity="0"/>
     <geom name="table" type="box" pos="0 0 -0.012" size="0.58 0.40 0.012" material="table_material" friction="{table_friction}"/>
     <camera name="overview" pos="0 -0.72 0.52" xyaxes="1 0 0 0 0.58 0.82" fovy="45"/>
 {chr(10).join(robot_bodies)}
@@ -262,18 +455,54 @@ class FoldClothEnv:
         self.camera_name = "overview"
         self._renderer: mujoco.Renderer | None = None
         self._robot_names = ["fold_robot_0", "fold_robot_1"]
-        self._robot_base_pos = np.asarray(
-            [self.model.body(f"{name}_base").pos.copy() for name in self._robot_names],
-            dtype=np.float64,
-        )
+        self._robot_cfg = config.robot or {}
+        self._robot_mode = _robot_model_name(self._robot_cfg)
+        self._use_panda = _is_panda_model(self._robot_cfg)
+        self._robot_base_pos: np.ndarray | None = None
         self._robot_body_ids = [
             self.model.body(f"{name}_tool").id for name in self._robot_names
         ]
-        self._robot_joint_ids = [
-            self.model.joint(f"{name}_{axis}").id
-            for name in self._robot_names
-            for axis in ("x", "y", "z")
-        ]
+        if self._use_panda:
+            self._robot_joint_ids = [
+                self.model.joint(f"{name}_j{idx}").id
+                for name in self._robot_names
+                for idx in range(1, 8)
+            ]
+            self._robot_actuator_ids = [
+                self.model.actuator(f"{name}_j{idx}_pos").id
+                for name in self._robot_names
+                for idx in range(1, 8)
+            ]
+            self._robot_site_ids = [
+                self.model.site(f"{name}_tip").id for name in self._robot_names
+            ]
+            self._panda_joint_ranges = np.vstack([PANDA_JOINT_RANGES, PANDA_JOINT_RANGES])
+            self._panda_home_qpos = self._coerce_panda_home_qpos()
+            self._panda_qpos_by_arm: list[np.ndarray] = []
+            self._panda_qvel_by_arm: list[np.ndarray] = []
+            self._panda_ik_data = mujoco.MjData(self.model)
+            self._panda_control = str(self._robot_cfg.get("control", "kinematic_ik")).lower()
+            self._ik_iterations = int(self._robot_cfg.get("ik_iterations", 40))
+            self._ik_damping = float(self._robot_cfg.get("ik_damping", 0.035))
+            self._ik_max_step = float(self._robot_cfg.get("ik_max_step", 0.09))
+            self._ik_tolerance = float(self._robot_cfg.get("ik_tolerance", 0.003))
+            self._active_panda_q_targets: np.ndarray | None = None
+        else:
+            self._robot_base_pos = np.asarray(
+                [self.model.body(f"{name}_base").pos.copy() for name in self._robot_names],
+                dtype=np.float64,
+            )
+            self._robot_joint_ids = [
+                self.model.joint(f"{name}_{axis}").id
+                for name in self._robot_names
+                for axis in ("x", "y", "z")
+            ]
+            self._robot_actuator_ids = [
+                self.model.actuator(f"{name}_{axis}_pos").id
+                for name in self._robot_names
+                for axis in ("x", "y", "z")
+            ]
+            self._robot_site_ids = []
         self._robot_qpos_ids = np.asarray(
             [self.model.jnt_qposadr[joint_id] for joint_id in self._robot_joint_ids],
             dtype=np.int64,
@@ -282,11 +511,9 @@ class FoldClothEnv:
             [self.model.jnt_dofadr[joint_id] for joint_id in self._robot_joint_ids],
             dtype=np.int64,
         )
-        self._robot_actuator_ids = [
-            self.model.actuator(f"{name}_{axis}_pos").id
-            for name in self._robot_names
-            for axis in ("x", "y", "z")
-        ]
+        if self._use_panda:
+            self._panda_qpos_by_arm = [self._robot_qpos_ids[idx * 7 : (idx + 1) * 7] for idx in range(2)]
+            self._panda_qvel_by_arm = [self._robot_qvel_ids[idx * 7 : (idx + 1) * 7] for idx in range(2)]
         self._grasp_eq_ids = [
             self.model.eq(f"{name}_grasp").id for name in self._robot_names
         ]
@@ -299,8 +526,8 @@ class FoldClothEnv:
             ],
             dtype=np.int64,
         )
-        self._initial_targets = self._robot_base_pos.copy()
-        self._waypoints = _coerce_waypoints(config, float(self._robot_base_pos[0, 2]))
+        self._initial_targets = _initial_grasp_targets(config)
+        self._waypoints = _coerce_waypoints(config, float(self._initial_targets[0, 2]))
         self._release_time = float((config.trajectory or {}).get("release_time", config.duration + 1.0))
 
     def close(self) -> None:
@@ -317,6 +544,76 @@ class FoldClothEnv:
             )
         return self._renderer
 
+    def _coerce_panda_home_qpos(self) -> np.ndarray:
+        home_qpos = self._robot_cfg.get("initial_qpos")
+        if home_qpos is None:
+            return np.vstack([PANDA_HOME_QPOS, PANDA_HOME_QPOS]).astype(np.float64)
+        values = np.asarray(home_qpos, dtype=np.float64)
+        if values.shape == (7,):
+            return np.vstack([values, values])
+        if values.shape == (2, 7):
+            return values
+        raise ValueError("robot.initial_qpos must be either a 7-vector or a [2, 7] array")
+
+    def _apply_panda_joint_positions(self, q_targets: np.ndarray, *, set_state: bool) -> None:
+        q_flat = np.asarray(q_targets, dtype=np.float64).reshape(-1)
+        if set_state:
+            self.data.qpos[self._robot_qpos_ids] = q_flat
+            self.data.qvel[self._robot_qvel_ids] = 0.0
+        for actuator_id, value in zip(self._robot_actuator_ids, q_flat):
+            ctrl_range = self.model.actuator_ctrlrange[actuator_id]
+            self.data.ctrl[actuator_id] = float(np.clip(value, ctrl_range[0], ctrl_range[1]))
+
+    def _reset_panda_home(self) -> None:
+        self._apply_panda_joint_positions(self._panda_home_qpos, set_state=True)
+        self._active_panda_q_targets = self._panda_home_qpos.copy()
+        mujoco.mj_forward(self.model, self.data)
+
+    def _hold_kinematic_panda(self) -> None:
+        if self._use_panda and self._panda_control == "kinematic_ik" and self._active_panda_q_targets is not None:
+            self._apply_panda_joint_positions(self._active_panda_q_targets, set_state=True)
+
+    def _solve_panda_ik(self, targets: np.ndarray) -> np.ndarray:
+        ik_data = self._panda_ik_data
+        ik_data.qpos[:] = self.data.qpos
+        ik_data.qvel[:] = 0.0
+        ik_data.ctrl[:] = self.data.ctrl
+        ik_data.eq_active[:] = 0
+        mujoco.mj_forward(self.model, ik_data)
+
+        solutions: list[np.ndarray] = []
+        damping_eye = (self._ik_damping**2) * np.eye(3)
+        for arm_idx, target in enumerate(np.asarray(targets, dtype=np.float64)):
+            qpos_ids = self._panda_qpos_by_arm[arm_idx]
+            qvel_ids = self._panda_qvel_by_arm[arm_idx]
+            site_id = self._robot_site_ids[arm_idx]
+            ranges = PANDA_JOINT_RANGES
+
+            for _ in range(self._ik_iterations):
+                mujoco.mj_forward(self.model, ik_data)
+                error = target - ik_data.site_xpos[site_id]
+                if float(np.linalg.norm(error)) <= self._ik_tolerance:
+                    break
+                jacp = np.zeros((3, self.model.nv), dtype=np.float64)
+                jacr = np.zeros((3, self.model.nv), dtype=np.float64)
+                mujoco.mj_jacSite(self.model, ik_data, jacp, jacr, site_id)
+                jac = jacp[:, qvel_ids]
+                dq = jac.T @ np.linalg.solve(jac @ jac.T + damping_eye, error)
+                dq_norm = float(np.linalg.norm(dq))
+                if dq_norm > self._ik_max_step:
+                    dq *= self._ik_max_step / dq_norm
+                ik_data.qpos[qpos_ids] = np.clip(ik_data.qpos[qpos_ids] + dq, ranges[:, 0], ranges[:, 1])
+                ik_data.qvel[qvel_ids] = 0.0
+
+            solutions.append(ik_data.qpos[qpos_ids].copy())
+
+        return np.asarray(solutions, dtype=np.float64)
+
+    def _robot_ee_positions(self) -> np.ndarray:
+        if self._use_panda:
+            return np.asarray([self.data.site_xpos[site_id].copy() for site_id in self._robot_site_ids])
+        return self.data.xpos[self._robot_body_ids].copy()
+
     def _targets_for_time(self, time_s: float) -> np.ndarray:
         waypoint = _interpolate_waypoints(self._waypoints, time_s)
         targets = self._initial_targets.copy()
@@ -326,10 +623,28 @@ class FoldClothEnv:
         return targets
 
     def _set_robot_targets(self, targets: np.ndarray) -> None:
+        if self._use_panda:
+            q_targets = self._solve_panda_ik(targets)
+            self._active_panda_q_targets = q_targets.copy()
+            self._apply_panda_joint_positions(q_targets, set_state=self._panda_control == "kinematic_ik")
+            if self._panda_control == "kinematic_ik":
+                mujoco.mj_forward(self.model, self.data)
+            return
+        assert self._robot_base_pos is not None
         q_targets = (targets - self._robot_base_pos).reshape(-1)
         for actuator_id, value in zip(self._robot_actuator_ids, q_targets):
             ctrl_range = self.model.actuator_ctrlrange[actuator_id]
             self.data.ctrl[actuator_id] = float(np.clip(value, ctrl_range[0], ctrl_range[1]))
+
+    def _set_robot_state_to_targets(self, targets: np.ndarray) -> None:
+        if self._use_panda:
+            q_targets = self._solve_panda_ik(targets)
+            self._active_panda_q_targets = q_targets.copy()
+            self._apply_panda_joint_positions(q_targets, set_state=True)
+            mujoco.mj_forward(self.model, self.data)
+            return
+        self._set_robot_targets(targets)
+        mujoco.mj_forward(self.model, self.data)
 
     def _set_grasp_active(self, active: bool) -> None:
         value = 1 if active else 0
@@ -338,11 +653,14 @@ class FoldClothEnv:
 
     def reset(self) -> dict[str, np.ndarray]:
         mujoco.mj_resetData(self.model, self.data)
+        self._set_grasp_active(False)
+        if self._use_panda:
+            self._reset_panda_home()
+        self._set_robot_state_to_targets(self._initial_targets)
         self._set_grasp_active(True)
-        self._set_robot_targets(self._initial_targets)
-        mujoco.mj_forward(self.model, self.data)
         settle_steps = int(self.config.physics.get("reset_settle_steps", 120))
         for _ in range(settle_steps):
+            self._hold_kinematic_panda()
             mujoco.mj_step(self.model, self.data)
         return self.observe(self._initial_targets, True)
 
@@ -353,6 +671,7 @@ class FoldClothEnv:
         self._set_robot_targets(targets)
         inner_steps = max(1, round(self.config.control_dt / self.config.timestep))
         for _ in range(inner_steps):
+            self._hold_kinematic_panda()
             mujoco.mj_step(self.model, self.data)
         return self.observe(targets, grasp_active)
 
@@ -372,7 +691,7 @@ class FoldClothEnv:
             "sim_qvel": self.data.qvel.copy(),
             "robot_qpos": self.data.qpos[self._robot_qpos_ids].copy(),
             "robot_qvel": self.data.qvel[self._robot_qvel_ids].copy(),
-            "robot_ee_pos": self.data.xpos[self._robot_body_ids].copy(),
+            "robot_ee_pos": self._robot_ee_positions(),
             "robot_target_pos": np.asarray(target_pos, dtype=np.float64).copy(),
             "cloth_vertex_pos": self.data.xpos[self._cloth_body_ids].copy(),
             "grasp_active": np.asarray([1.0 if grasp_active else 0.0], dtype=np.float32),
@@ -450,7 +769,12 @@ def save_rollout(
         meta.attrs["cloth_young"] = float(config.cloth["young"])
         meta.attrs["cloth_poisson"] = float(config.cloth["poisson"])
         meta.attrs["cloth_shell_plugin"] = "mujoco.elasticity.shell"
-        meta.attrs["robot_type"] = "dual_position_actuated_cartesian_end_effectors"
+        robot_model = _robot_model_name(config.robot or {})
+        meta.attrs["robot_type"] = (
+            "dual_franka_panda_mesh_ik_end_effectors"
+            if robot_model in PANDA_MODEL_NAMES
+            else "dual_position_actuated_cartesian_end_effectors"
+        )
 
     imageio.mimsave(video_path, list(rollout["rgb"]), fps=config.fps)
     return h5_path, video_path

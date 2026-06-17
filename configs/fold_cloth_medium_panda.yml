@@ -1,0 +1,71 @@
+seed: 10
+duration: 5.8
+timestep: 0.002
+control_dt: 0.02
+image_width: 320
+image_height: 240
+fps: 50
+
+physics:
+  gravity: [0.0, 0.0, -9.81]
+  reset_settle_steps: 0
+  solver_iterations: 180
+  solver_ls_iterations: 60
+  table_friction: [1.6, 0.03, 0.0004]
+
+cloth:
+  size: [0.34, 0.24]
+  grid: [17, 13]
+  mass: 0.09
+  radius: 0.004
+  thickness: 0.0009
+  young: 40000.0
+  poisson: 0.43
+  edge_damping: 1.0
+  friction: [1.5, 0.025, 0.0003]
+  color: [0.10, 0.55, 0.85, 1.0]
+
+gripper:
+  radius: 0.012
+  moving_rgba:
+    - [0.95, 0.22, 0.10, 1.0]
+    - [0.12, 0.38, 0.92, 1.0]
+  right_edge_y_fraction: [0.25, 0.75]
+
+robot:
+  model: panda_mesh
+  control: kinematic_ik
+  grasp_y_fraction: [0.25, 0.75]
+  grasp_solref: "0.012 1"
+  grasp_solimp: "0.85 0.96 0.002"
+  grasp_relpose: [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]
+  grasp_torquescale: 0.0
+  base_positions:
+    - [-0.42, -0.22, 0.0]
+    - [-0.42, 0.22, 0.0]
+  base_yaw: [0.0, 0.0]
+  initial_qpos:
+    - [0.212422, 0.362907, -0.00733391, -1.9649, -0.0198034, 2.37451, -1.50499]
+    - [0.212422, 0.362907, -0.00733391, -1.9649, -0.0198034, 2.37451, -1.50499]
+  kp: 90.0
+  joint_damping: 4.0
+  joint_armature: 0.05
+  ik_iterations: 50
+  ik_damping: 0.04
+  ik_max_step: 0.08
+  ik_tolerance: 0.003
+
+trajectory:
+  release_time: 6.0
+  waypoints:
+    - {time: 0.00, x: 0.17, z: 0.008}
+    - {time: 0.45, x: 0.17, z: 0.035}
+    - {time: 1.15, x: 0.17, z: 0.155}
+    - {time: 2.80, x: -0.02, z: 0.165}
+    - {time: 3.70, x: -0.135, z: 0.060}
+    - {time: 4.25, x: -0.155, z: 0.026}
+    - {time: 4.85, x: -0.155, z: 0.150}
+    - {time: 5.80, x: -0.155, z: 0.150}
+
+output:
+  task_name: fold_cloth_panda

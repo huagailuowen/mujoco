@@ -8,9 +8,9 @@ Path:
 /mnt/sda/cy/shared_project/TTTdynamics/sim_envs/MuJoCo
 ```
 
-The environments are intended to replace hinge-driven RoboTwin placeholders when the object physics must matter. The line task uses MuJoCo cable dynamics. The cloth task uses `mujoco.elasticity.shell`, flex edge constraints, table contact, and position-actuated robot end-effectors welded to cloth grasp vertices during the grasp phase.
+The environments are intended to replace hinge-driven RoboTwin placeholders when the object physics must matter. The line task uses MuJoCo cable dynamics. The cloth task uses `mujoco.elasticity.shell`, flex edge constraints, table contact, and grasp constraints welded to cloth vertices during the grasp phase.
 
-The fold-cloth setup follows the same structure as existing MuJoCo cloth manipulation examples such as `benchmarking_cloth`: shell cloth, edge equality, high-friction table contact, corner/edge grasp constraints, and scripted quasi-static folding trajectories. This repo keeps the setup self-contained and does not vendor external assets.
+The fold-cloth setup follows the same structure as existing MuJoCo cloth manipulation examples such as `benchmarking_cloth`: shell cloth, edge equality, high-friction table contact, corner/edge grasp constraints, and scripted quasi-static folding trajectories. The Panda mesh variant additionally follows the robot model structure from `dynamic-cloth-folding`, which used a Franka Emika Panda for cloth-folding experiments.
 
 ## Environment Setup
 
@@ -84,6 +84,17 @@ outputs/fold_cloth_medium_robot/episode0.mp4
 
 The medium config is 5.8 seconds at 50 FPS, so the demo should produce 290 frames. The two robot end-effectors grip the right cloth edge, lift, fold across the center line, lower, release the weld constraints, and then lift away while the cloth settles.
 
+The default fold-cloth configs use lightweight Cartesian end-effectors. To run the robot-mesh variant, use:
+
+```bash
+cd /mnt/sda/cy/shared_project/TTTdynamics/sim_envs/MuJoCo
+MUJOCO_GL=egl .venv/bin/python examples/run_fold_cloth_demo.py \
+  --config configs/fold_cloth_medium_panda.yml \
+  --output outputs/fold_cloth_medium_panda
+```
+
+`configs/fold_cloth_medium_panda.yml` instantiates two Franka Panda mesh arms using STL assets from `dynamic-cloth-folding`, solves position-only IK for each gripper site, and keeps the same cloth vertex weld grasp model used by the MuJoCo cloth-manipulation references. This validated demo keeps the grasp active through the rollout; release timing should be tuned separately because releasing a deformable shell from hard constraints can destabilize the scene. It is an environment-level robot model, not a trained control policy.
+
 `configs/fold_cloth_soft.yml` intentionally uses much softer shell parameters than the medium config so the cloth collapses and wrinkles. `configs/fold_cloth_stiff.yml` uses a stable high-stiffness setting that behaves more like a resistant sheet without the startup bounce caused by over-hard shell parameters.
 
 `configs/fold_cloth_very_stiff.yml` raises Young's modulus further while keeping the sheet thin enough to avoid the startup spring-board artifact. Use it when testing a more resistant cloth without returning to the unstable stress-test parameters.
@@ -105,6 +116,8 @@ The HDF5 file stores:
 - `actions/robot_target_pos`: scripted robot target positions
 - `actions/grasp_active`: whether the cloth weld grasp is active
 - `metadata/cloth_shell_plugin`: `mujoco.elasticity.shell`
+
+Panda mesh assets are stored under `assets/franka_panda/`. They come from the MIT-licensed `dynamic-cloth-folding` project; the upstream license is included next to the assets.
 
 ## Why MuJoCo
 
