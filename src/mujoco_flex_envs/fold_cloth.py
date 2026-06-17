@@ -341,7 +341,8 @@ class FoldClothEnv:
         self._set_grasp_active(True)
         self._set_robot_targets(self._initial_targets)
         mujoco.mj_forward(self.model, self.data)
-        for _ in range(120):
+        settle_steps = int(self.config.physics.get("reset_settle_steps", 120))
+        for _ in range(settle_steps):
             mujoco.mj_step(self.model, self.data)
         return self.observe(self._initial_targets, True)
 
@@ -441,6 +442,7 @@ def save_rollout(
         meta.attrs["duration"] = float(config.duration)
         meta.attrs["control_dt"] = float(config.control_dt)
         meta.attrs["timestep"] = float(config.timestep)
+        meta.attrs["reset_settle_steps"] = int(config.physics.get("reset_settle_steps", 120))
         meta.attrs["cloth_size"] = np.asarray(config.cloth["size"], dtype=np.float32)
         meta.attrs["cloth_grid"] = np.asarray(config.cloth["grid"], dtype=np.int32)
         meta.attrs["cloth_mass"] = float(config.cloth["mass"])
