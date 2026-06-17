@@ -1,0 +1,47 @@
+seed: 11
+duration: 5.0
+timestep: 0.002
+control_dt: 0.02
+image_width: 320
+image_height: 240
+fps: 50
+
+physics:
+  gravity: [0.0, 0.0, -9.81]
+  solver_iterations: 120
+  solver_ls_iterations: 30
+  table_friction: [1.5, 0.025, 0.0002]
+
+cloth:
+  size: [0.36, 0.25]
+  grid: [17, 11]
+  mass: 0.07
+  radius: 0.0035
+  thickness: 0.0035
+  young: 350.0
+  poisson: 0.32
+  damping: 0.015
+  friction: [1.4, 0.025, 0.0002]
+  color: [0.10, 0.70, 0.55, 1.0]
+
+gripper:
+  radius: 0.018
+  moving_rgba: [0.95, 0.22, 0.10, 1.0]
+  holder_rgba: [0.15, 0.15, 0.15, 1.0]
+  right_edge_y_fraction: [0.25, 0.75]
+  left_edge_y_fraction: [0.25, 0.75]
+  path:
+    - right_x: 0.18
+      z: 0.055
+    - right_x: 0.18
+      z: 0.15
+    - right_x: 0.02
+      z: 0.18
+    - right_x: -0.11
+      z: 0.13
+    - right_x: -0.15
+      z: 0.065
+
+output:
+  task_name: fold_cloth
+

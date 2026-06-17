@@ -1,0 +1,33 @@
+seed: 0
+duration: 4.0
+timestep: 0.002
+control_dt: 0.02
+image_width: 320
+image_height: 240
+fps: 50
+
+physics:
+  gravity: [0.0, 0.0, -9.81]
+  solver_iterations: 80
+  solver_ls_iterations: 20
+  table_friction: [1.0, 0.005, 0.0001]
+
+line:
+  length: 0.55
+  radius: 0.008
+  segments: 24
+  density: 650.0
+  damping: 0.03
+  joint_stiffness: 0.08
+  joint_friction: 0.015
+  bend_stiffness: 0.004
+  color: [0.08, 0.55, 0.88, 1.0]
+
+gripper:
+  radius: 0.025
+  rgba: [0.95, 0.25, 0.12, 1.0]
+  path:
+    - [0.20, -0.12, 0.10]
+    - [0.08, -0.08, 0.055]
+    - [-0.05, 0.05, 0.07]
+    - [-0.18, 0.12, 0.09]

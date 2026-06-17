@@ -1,0 +1,25 @@
+[project]
+name = "mujoco-flex-envs"
+version = "0.1.0"
+description = "MuJoCo flexible-line simulation environments for TTT dynamics data collection."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+dependencies = [
+    "mujoco>=3.2.6,<4",
+    "numpy>=1.26",
+    "imageio>=2.34",
+    "imageio-ffmpeg>=0.5",
+    "h5py>=3.11",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+mujoco-flex-demo = "mujoco_flex_envs.demo_rollout:main"
+mujoco-fold-cloth-demo = "mujoco_flex_envs.fold_cloth_demo:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.uv]
+index-url = "https://pypi.tuna.tsinghua.edu.cn/simple"
