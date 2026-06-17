@@ -86,6 +86,8 @@ The medium config is 5.8 seconds at 50 FPS, so the demo should produce 290 frame
 
 `configs/fold_cloth_soft.yml` intentionally uses much softer shell parameters than the medium config so the cloth collapses and wrinkles. `configs/fold_cloth_stiff.yml` uses a stable high-stiffness setting that behaves more like a resistant sheet without the startup bounce caused by over-hard shell parameters.
 
+`configs/fold_cloth_very_stiff.yml` raises Young's modulus further while keeping the sheet thin enough to avoid the startup spring-board artifact. Use it when testing a more resistant cloth without returning to the unstable stress-test parameters.
+
 The HDF5 file stores:
 
 - `observations/rgb`: RGB frames, shape `(T, H, W, 3)`

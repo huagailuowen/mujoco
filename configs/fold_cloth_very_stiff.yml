@@ -1,0 +1,57 @@
+seed: 13
+duration: 5.8
+timestep: 0.002
+control_dt: 0.02
+image_width: 320
+image_height: 240
+fps: 50
+
+physics:
+  gravity: [0.0, 0.0, -9.81]
+  reset_settle_steps: 120
+  solver_iterations: 200
+  solver_ls_iterations: 70
+  table_friction: [1.15, 0.015, 0.0002]
+
+cloth:
+  size: [0.32, 0.22]
+  grid: [17, 13]
+  mass: 0.11
+  radius: 0.004
+  thickness: 0.00095
+  young: 120000.0
+  poisson: 0.34
+  edge_damping: 1.2
+  friction: [1.15, 0.015, 0.0002]
+  color: [0.12, 0.24, 0.92, 1.0]
+
+gripper:
+  radius: 0.014
+  moving_rgba:
+    - [0.95, 0.22, 0.10, 1.0]
+    - [0.12, 0.38, 0.92, 1.0]
+  right_edge_y_fraction: [0.25, 0.75]
+
+robot:
+  grasp_y_fraction: [0.25, 0.75]
+  kp: 900.0
+  joint_damping: 9.0
+  joint_armature: 0.035
+  x_range: [-0.52, 0.12]
+  y_range: [-0.08, 0.08]
+  z_range: [-0.006, 0.26]
+
+trajectory:
+  release_time: 4.3
+  waypoints:
+    - {time: 0.00, x: 0.16, z: 0.008}
+    - {time: 0.45, x: 0.16, z: 0.034}
+    - {time: 1.15, x: 0.16, z: 0.150}
+    - {time: 2.80, x: -0.02, z: 0.160}
+    - {time: 3.70, x: -0.125, z: 0.055}
+    - {time: 4.25, x: -0.145, z: 0.026}
+    - {time: 4.85, x: -0.145, z: 0.145}
+    - {time: 5.80, x: -0.145, z: 0.145}
+
+output:
+  task_name: fold_cloth_very_stiff
