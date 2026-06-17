@@ -7,7 +7,7 @@ from .fold_cloth import FoldClothConfig, FoldClothEnv, save_rollout
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Run a MuJoCo flex-grid cloth folding scripted rollout.")
+    parser = argparse.ArgumentParser(description="Run a MuJoCo shell-cloth folding rollout with dual robot end-effectors.")
     parser.add_argument(
         "--config",
         default="configs/fold_cloth_medium.yml",
@@ -38,4 +38,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

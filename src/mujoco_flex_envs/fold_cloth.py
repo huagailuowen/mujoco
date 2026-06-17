@@ -23,6 +23,8 @@ class FoldClothConfig:
     physics: dict[str, Any]
     cloth: dict[str, Any]
     gripper: dict[str, Any]
+    robot: dict[str, Any] | None = None
+    trajectory: dict[str, Any] | None = None
     output: dict[str, Any] | None = None
 
     @classmethod
@@ -32,7 +34,7 @@ class FoldClothConfig:
         return cls(**data)
 
 
-def _vec(values: list[float] | tuple[float, ...], precision: int = 6) -> str:
+def _vec(values: list[float] | tuple[float, ...] | np.ndarray, precision: int = 6) -> str:
     return " ".join(f"{float(v):.{precision}g}" for v in values)
 
 
@@ -50,90 +52,200 @@ def _edge_anchor(size_x: float, size_y: float, x_side: str, y_fraction: float, z
     return np.array([x, y, z], dtype=np.float64)
 
 
+def _smoothstep(value: float) -> float:
+    x = float(np.clip(value, 0.0, 1.0))
+    return x * x * x * (x * (x * 6.0 - 15.0) + 10.0)
+
+
+def _coerce_waypoints(config: FoldClothConfig, cloth_z: float) -> list[dict[str, float]]:
+    trajectory = config.trajectory or {}
+    waypoints = trajectory.get("waypoints")
+    if waypoints:
+        return [
+            {
+                "time": float(point["time"]),
+                "x": float(point["x"]),
+                "z": float(point["z"]),
+                "y_offset": float(point.get("y_offset", 0.0)),
+            }
+            for point in waypoints
+        ]
+
+    path = config.gripper.get("path", [])
+    if path:
+        times = np.linspace(0.0, config.duration, len(path))
+        return [
+            {
+                "time": float(time),
+                "x": float(point["right_x"]),
+                "z": float(point["z"]),
+                "y_offset": 0.0,
+            }
+            for time, point in zip(times, path)
+        ]
+
+    size_x, _ = [float(v) for v in config.cloth["size"]]
+    right_x = 0.5 * size_x
+    return [
+        {"time": 0.00, "x": right_x, "z": cloth_z, "y_offset": 0.0},
+        {"time": 0.35, "x": right_x, "z": cloth_z + 0.015, "y_offset": 0.0},
+        {"time": 1.10, "x": right_x, "z": cloth_z + 0.145, "y_offset": 0.0},
+        {"time": 2.80, "x": -0.20 * size_x, "z": cloth_z + 0.155, "y_offset": 0.0},
+        {"time": 3.70, "x": -0.48 * size_x, "z": cloth_z + 0.030, "y_offset": 0.0},
+        {"time": 4.10, "x": -0.48 * size_x, "z": cloth_z + 0.026, "y_offset": 0.0},
+        {"time": 4.70, "x": -0.48 * size_x, "z": cloth_z + 0.150, "y_offset": 0.0},
+        {"time": 5.00, "x": -0.48 * size_x, "z": cloth_z + 0.150, "y_offset": 0.0},
+    ]
+
+
+def _interpolate_waypoints(waypoints: list[dict[str, float]], time_s: float) -> dict[str, float]:
+    if time_s <= waypoints[0]["time"]:
+        return waypoints[0]
+    if time_s >= waypoints[-1]["time"]:
+        return waypoints[-1]
+
+    for left, right in zip(waypoints[:-1], waypoints[1:]):
+        if left["time"] <= time_s <= right["time"]:
+            span = max(right["time"] - left["time"], 1e-9)
+            alpha = _smoothstep((time_s - left["time"]) / span)
+            return {
+                "time": time_s,
+                "x": (1.0 - alpha) * left["x"] + alpha * right["x"],
+                "z": (1.0 - alpha) * left["z"] + alpha * right["z"],
+                "y_offset": (1.0 - alpha) * left.get("y_offset", 0.0)
+                + alpha * right.get("y_offset", 0.0),
+            }
+
+    return waypoints[-1]
+
+
+def _cartesian_robot_xml(
+    name: str,
+    base_pos: np.ndarray,
+    rgba: str,
+    grip_radius: float,
+    robot_cfg: dict[str, Any],
+) -> tuple[str, str]:
+    kp = float(robot_cfg.get("kp", 900.0))
+    damping = float(robot_cfg.get("joint_damping", 8.0))
+    armature = float(robot_cfg.get("joint_armature", 0.02))
+    x_range = robot_cfg.get("x_range", [-0.55, 0.12])
+    y_range = robot_cfg.get("y_range", [-0.10, 0.10])
+    z_range = robot_cfg.get("z_range", [-0.006, 0.26])
+    body = f"""    <body name="{name}_base" pos="{_vec(base_pos)}">
+      <geom name="{name}_base_marker" type="cylinder" pos="0 0 -0.025" size="0.018 0.025" rgba="0.18 0.18 0.18 1" contype="0" conaffinity="0"/>
+      <body name="{name}_x_link">
+        <joint name="{name}_x" type="slide" axis="1 0 0" range="{_vec(x_range)}" damping="{damping:.8f}" armature="{armature:.8f}"/>
+        <inertial pos="0 0 0" mass="0.05" diaginertia="0.00002 0.00002 0.00002"/>
+        <geom name="{name}_x_carriage" type="box" size="0.014 0.006 0.006" rgba="{rgba}" contype="0" conaffinity="0"/>
+        <body name="{name}_y_link">
+          <joint name="{name}_y" type="slide" axis="0 1 0" range="{_vec(y_range)}" damping="{damping:.8f}" armature="{armature:.8f}"/>
+          <inertial pos="0 0 0" mass="0.05" diaginertia="0.00002 0.00002 0.00002"/>
+          <geom name="{name}_y_carriage" type="box" size="0.006 0.014 0.006" rgba="{rgba}" contype="0" conaffinity="0"/>
+          <body name="{name}_tool">
+            <joint name="{name}_z" type="slide" axis="0 0 1" range="{_vec(z_range)}" damping="{damping:.8f}" armature="{armature:.8f}"/>
+            <inertial pos="0 0 0" mass="0.08" diaginertia="0.00003 0.00003 0.00003"/>
+            <geom name="{name}_palm" type="sphere" size="{grip_radius:.8f}" rgba="{rgba}" condim="4" friction="2.0 0.08 0.002"/>
+            <geom name="{name}_finger_a" type="capsule" fromto="0 -0.018 0 0 -0.006 -0.006" size="0.0035" rgba="{rgba}" condim="4" friction="2.0 0.08 0.002"/>
+            <geom name="{name}_finger_b" type="capsule" fromto="0 0.018 0 0 0.006 -0.006" size="0.0035" rgba="{rgba}" condim="4" friction="2.0 0.08 0.002"/>
+            <site name="{name}_tip" pos="0 0 0" size="0.004" rgba="1 1 1 1"/>
+          </body>
+        </body>
+      </body>
+    </body>"""
+    actuator = f"""    <position name="{name}_x_pos" joint="{name}_x" kp="{kp:.8f}" ctrllimited="true" ctrlrange="{_vec(x_range)}"/>
+    <position name="{name}_y_pos" joint="{name}_y" kp="{kp:.8f}" ctrllimited="true" ctrlrange="{_vec(y_range)}"/>
+    <position name="{name}_z_pos" joint="{name}_z" kp="{kp:.8f}" ctrllimited="true" ctrlrange="{_vec(z_range)}"/>"""
+    return body, actuator
+
+
 def build_mjcf(config: FoldClothConfig) -> str:
     cloth = config.cloth
     phys = config.physics
     gripper = config.gripper
+    robot_cfg = config.robot or {}
 
     size_x, size_y = [float(v) for v in cloth["size"]]
     grid_x, grid_y = [int(v) for v in cloth["grid"]]
     if grid_x < 3 or grid_y < 3:
         raise ValueError("cloth.grid must be at least [3, 3]")
+
     spacing_x = size_x / (grid_x - 1)
     spacing_y = size_y / (grid_y - 1)
-    cloth_z = max(float(cloth.get("radius", 0.0035)) * 2.0, float(cloth.get("thickness", 0.004)) * 1.5)
+    cloth_z = max(float(cloth.get("radius", 0.004)) * 2.0, float(cloth.get("thickness", 0.0008)) * 6.0)
 
-    right_fracs = gripper.get("right_edge_y_fraction", [0.25, 0.75])
-    left_fracs = gripper.get("left_edge_y_fraction", [0.25, 0.75])
-    right_anchors = [_edge_anchor(size_x, size_y, "right", frac, cloth_z) for frac in right_fracs]
-    left_anchors = [_edge_anchor(size_x, size_y, "left", frac, cloth_z) for frac in left_fracs]
+    y_fracs = robot_cfg.get("grasp_y_fraction", gripper.get("right_edge_y_fraction", [0.15, 0.85]))
+    if len(y_fracs) != 2:
+        raise ValueError("robot.grasp_y_fraction must contain exactly two values for the dual-gripper demo")
+    anchors = [_edge_anchor(size_x, size_y, "right", frac, cloth_z) for frac in y_fracs]
 
-    moving_rgba = _vec(gripper.get("moving_rgba", [0.95, 0.22, 0.10, 1.0]))
-    holder_rgba = _vec(gripper.get("holder_rgba", [0.15, 0.15, 0.15, 1.0]))
-    grip_radius = float(gripper.get("radius", 0.018))
+    moving_rgba_values = gripper.get("moving_rgba", [0.95, 0.22, 0.10, 1.0])
+    grip_radius = float(gripper.get("radius", 0.014))
     gravity = _vec(phys.get("gravity", [0.0, 0.0, -9.81]))
-    table_friction = _vec(phys.get("table_friction", [1.4, 0.02, 0.0002]))
-    cloth_friction = _vec(cloth.get("friction", [1.3, 0.02, 0.0002]))
+    table_friction = _vec(phys.get("table_friction", [1.6, 0.03, 0.0004]))
+    cloth_friction = _vec(cloth.get("friction", [1.4, 0.02, 0.0003]))
     color = _vec(cloth.get("color", [0.10, 0.55, 0.85, 1.0]))
-    iterations = int(phys.get("solver_iterations", 120))
-    ls_iterations = int(phys.get("solver_ls_iterations", 30))
+    iterations = int(phys.get("solver_iterations", 160))
+    ls_iterations = int(phys.get("solver_ls_iterations", 50))
+    edge_damping = float(cloth.get("edge_damping", 1.0))
 
-    mocap_bodies = []
-    equalities = []
-
-    for idx, anchor in enumerate(right_anchors):
-        name = f"fold_gripper_{idx}"
-        mocap_bodies.append(
-            f'    <body name="{name}" mocap="true" pos="{_vec(anchor)}">\n'
-            f'      <geom name="{name}_geom" type="sphere" size="{grip_radius:.8f}" rgba="{moving_rgba}" '
-            'condim="4" friction="2.0 0.08 0.002"/>\n'
-            "    </body>"
-        )
-        y_idx = _fraction_to_grid_index(right_fracs[idx], grid_y)
+    robot_bodies: list[str] = []
+    actuators: list[str] = []
+    equalities: list[str] = []
+    for idx, anchor in enumerate(anchors):
+        name = f"fold_robot_{idx}"
+        rgba = _vec(moving_rgba_values[idx] if isinstance(moving_rgba_values[0], list) else moving_rgba_values)
+        body, actuator = _cartesian_robot_xml(name, anchor, rgba, grip_radius, robot_cfg)
+        robot_bodies.append(body)
+        actuators.append(actuator)
+        y_idx = _fraction_to_grid_index(float(y_fracs[idx]), grid_y)
         cloth_body = _cloth_vertex_body_name(grid_x - 1, y_idx, grid_y)
         equalities.append(
-            f'    <connect name="{name}_pin" body1="{name}" body2="{cloth_body}" '
-            f'anchor="{_vec(anchor)}" solref="0.003 1"/>'
+            f'    <weld name="{name}_grasp" body1="{name}_tool" body2="{cloth_body}" '
+            'solref="0.003 1" solimp="0.90 0.98 0.001"/>'
         )
 
-    for idx, anchor in enumerate(left_anchors):
-        name = f"fold_holder_{idx}"
-        mocap_bodies.append(
-            f'    <body name="{name}" mocap="true" pos="{_vec(anchor)}">\n'
-            f'      <geom name="{name}_geom" type="sphere" size="{grip_radius:.8f}" rgba="{holder_rgba}" '
-            'condim="4" friction="2.0 0.08 0.002"/>\n'
-            "    </body>"
-        )
-        y_idx = _fraction_to_grid_index(left_fracs[idx], grid_y)
-        cloth_body = _cloth_vertex_body_name(0, y_idx, grid_y)
-        equalities.append(
-            f'    <connect name="{name}_pin" body1="{name}" body2="{cloth_body}" '
-            f'anchor="{_vec(anchor)}" solref="0.003 1"/>'
-        )
-
-    return f"""<mujoco model="ttt_fold_cloth">
+    return f"""<mujoco model="ttt_robot_fold_cloth">
   <compiler angle="radian"/>
-  <option timestep="{config.timestep:.8f}" gravity="{gravity}" iterations="{iterations}" ls_iterations="{ls_iterations}" integrator="implicitfast"/>
-  <size njmax="8000" nconmax="1600"/>
+  <option timestep="{config.timestep:.8f}" gravity="{gravity}" integrator="implicitfast" solver="CG" tolerance="1e-7" iterations="{iterations}" ls_iterations="{ls_iterations}">
+    <flag energy="enable"/>
+  </option>
+  <size njmax="12000" nconmax="2500"/>
+  <extension>
+    <plugin plugin="mujoco.elasticity.shell"/>
+  </extension>
   <default>
     <geom solref="0.004 1" solimp="0.9 0.98 0.001"/>
   </default>
   <visual>
+    <headlight ambient="0.42 0.42 0.42" diffuse="0.55 0.55 0.55" specular="0.16 0.16 0.16"/>
     <quality shadowsize="2048" offsamples="4"/>
     <map znear="0.01" zfar="10"/>
   </visual>
+  <asset>
+    <texture name="table_checker" type="2d" builtin="checker" rgb1="0.78 0.78 0.74" rgb2="0.64 0.64 0.60" width="512" height="512"/>
+    <material name="table_material" texture="table_checker" texrepeat="3 2" reflectance="0.01" shininess="0.0" specular="0.0"/>
+  </asset>
   <worldbody>
-    <light name="key" pos="0 -0.8 1.5" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
-    <geom name="table" type="box" pos="0 0 -0.012" size="0.55 0.38 0.012" rgba="0.82 0.82 0.78 1" friction="{table_friction}"/>
+    <light name="key" pos="0 -0.9 1.5" dir="0 0 -1" diffuse="0.85 0.85 0.85"/>
+    <geom name="table" type="box" pos="0 0 -0.012" size="0.58 0.40 0.012" material="table_material" friction="{table_friction}"/>
     <camera name="overview" pos="0 -0.72 0.52" xyaxes="1 0 0 0 0.58 0.82" fovy="45"/>
-{chr(10).join(mocap_bodies)}
+{chr(10).join(robot_bodies)}
     <body name="cloth_parent" pos="0 0 {cloth_z:.8f}">
-      <flexcomp name="cloth" type="grid" dim="2" count="{grid_x} {grid_y} 1" spacing="{spacing_x:.8f} {spacing_y:.8f} {max(spacing_x, spacing_y):.8f}" mass="{float(cloth.get("mass", 0.08)):.8f}" radius="{float(cloth.get("radius", 0.0035)):.8f}" rgba="{color}">
-        <contact condim="4" selfcollide="none" friction="{cloth_friction}"/>
-        <elasticity young="{float(cloth.get("young", 900.0)):.8f}" poisson="{float(cloth.get("poisson", 0.3)):.8f}" damping="{float(cloth.get("damping", 0.025)):.8f}" thickness="{float(cloth.get("thickness", 0.004)):.8f}"/>
+      <flexcomp name="cloth" type="grid" dim="2" count="{grid_x} {grid_y} 1" spacing="{spacing_x:.8f} {spacing_y:.8f} {max(spacing_x, spacing_y):.8f}" mass="{float(cloth.get("mass", 0.08)):.8f}" radius="{float(cloth.get("radius", 0.004)):.8f}" rgba="{color}">
+        <edge equality="true" damping="{edge_damping:.8f}"/>
+        <contact condim="4" selfcollide="none" solref="0.003" friction="{cloth_friction}"/>
+        <plugin plugin="mujoco.elasticity.shell">
+          <config key="poisson" value="{float(cloth.get("poisson", 0.42)):.8f}"/>
+          <config key="thickness" value="{float(cloth.get("thickness", 0.0008)):.8f}"/>
+          <config key="young" value="{float(cloth.get("young", 40000.0)):.8f}"/>
+        </plugin>
       </flexcomp>
     </body>
   </worldbody>
+  <actuator>
+{chr(10).join(actuators)}
+  </actuator>
   <equality>
 {chr(10).join(equalities)}
   </equality>
@@ -149,15 +261,47 @@ class FoldClothEnv:
         self.data = mujoco.MjData(self.model)
         self.camera_name = "overview"
         self._renderer: mujoco.Renderer | None = None
-        self._moving_mocap_ids = [
-            self.model.body(f"fold_gripper_{idx}").mocapid[0]
-            for idx in range(len(config.gripper.get("right_edge_y_fraction", [0.25, 0.75])))
+        self._robot_names = ["fold_robot_0", "fold_robot_1"]
+        self._robot_base_pos = np.asarray(
+            [self.model.body(f"{name}_base").pos.copy() for name in self._robot_names],
+            dtype=np.float64,
+        )
+        self._robot_body_ids = [
+            self.model.body(f"{name}_tool").id for name in self._robot_names
         ]
-        self._holder_mocap_ids = [
-            self.model.body(f"fold_holder_{idx}").mocapid[0]
-            for idx in range(len(config.gripper.get("left_edge_y_fraction", [0.25, 0.75])))
+        self._robot_joint_ids = [
+            self.model.joint(f"{name}_{axis}").id
+            for name in self._robot_names
+            for axis in ("x", "y", "z")
         ]
-        self._initial_mocap_pos = self.model.body_mocapid.copy()
+        self._robot_qpos_ids = np.asarray(
+            [self.model.jnt_qposadr[joint_id] for joint_id in self._robot_joint_ids],
+            dtype=np.int64,
+        )
+        self._robot_qvel_ids = np.asarray(
+            [self.model.jnt_dofadr[joint_id] for joint_id in self._robot_joint_ids],
+            dtype=np.int64,
+        )
+        self._robot_actuator_ids = [
+            self.model.actuator(f"{name}_{axis}_pos").id
+            for name in self._robot_names
+            for axis in ("x", "y", "z")
+        ]
+        self._grasp_eq_ids = [
+            self.model.eq(f"{name}_grasp").id for name in self._robot_names
+        ]
+        self._cloth_body_ids = np.asarray(
+            [
+                body_id
+                for body_id in range(self.model.nbody)
+                if (mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body_id) or "").startswith("cloth_")
+                and (mujoco.mj_id2name(self.model, mujoco.mjtObj.mjOBJ_BODY, body_id) or "")[6:].isdigit()
+            ],
+            dtype=np.int64,
+        )
+        self._initial_targets = self._robot_base_pos.copy()
+        self._waypoints = _coerce_waypoints(config, float(self._robot_base_pos[0, 2]))
+        self._release_time = float((config.trajectory or {}).get("release_time", config.duration + 1.0))
 
     def close(self) -> None:
         if self._renderer is not None:
@@ -173,49 +317,45 @@ class FoldClothEnv:
             )
         return self._renderer
 
-    def _edge_y_offsets(self) -> list[float]:
-        _, size_y = [float(v) for v in self.config.cloth["size"]]
-        return [
-            -0.5 * size_y + float(frac) * size_y
-            for frac in self.config.gripper.get("right_edge_y_fraction", [0.25, 0.75])
-        ]
+    def _targets_for_time(self, time_s: float) -> np.ndarray:
+        waypoint = _interpolate_waypoints(self._waypoints, time_s)
+        targets = self._initial_targets.copy()
+        targets[:, 0] = waypoint["x"]
+        targets[:, 1] += waypoint.get("y_offset", 0.0)
+        targets[:, 2] = waypoint["z"]
+        return targets
 
-    def _path_target(self, fraction: float) -> list[np.ndarray]:
-        path = self.config.gripper["path"]
-        if len(path) == 1:
-            point = path[0]
-            return [np.array([float(point["right_x"]), y, float(point["z"])]) for y in self._edge_y_offsets()]
+    def _set_robot_targets(self, targets: np.ndarray) -> None:
+        q_targets = (targets - self._robot_base_pos).reshape(-1)
+        for actuator_id, value in zip(self._robot_actuator_ids, q_targets):
+            ctrl_range = self.model.actuator_ctrlrange[actuator_id]
+            self.data.ctrl[actuator_id] = float(np.clip(value, ctrl_range[0], ctrl_range[1]))
 
-        fraction = float(np.clip(fraction, 0.0, 1.0))
-        scaled = fraction * (len(path) - 1)
-        idx = min(int(np.floor(scaled)), len(path) - 2)
-        local = scaled - idx
-
-        p0 = path[idx]
-        p1 = path[idx + 1]
-        x = (1.0 - local) * float(p0["right_x"]) + local * float(p1["right_x"])
-        z = (1.0 - local) * float(p0["z"]) + local * float(p1["z"])
-        return [np.array([x, y, z], dtype=np.float64) for y in self._edge_y_offsets()]
+    def _set_grasp_active(self, active: bool) -> None:
+        value = 1 if active else 0
+        for eq_id in self._grasp_eq_ids:
+            self.data.eq_active[eq_id] = value
 
     def reset(self) -> dict[str, np.ndarray]:
         mujoco.mj_resetData(self.model, self.data)
-        for mocap_id in range(self.model.nmocap):
-            body_id = np.flatnonzero(self.model.body_mocapid == mocap_id)[0]
-            self.data.mocap_pos[mocap_id] = self.model.body_pos[body_id]
-            self.data.mocap_quat[mocap_id] = np.array([1.0, 0.0, 0.0, 0.0])
-        for _ in range(100):
+        self._set_grasp_active(True)
+        self._set_robot_targets(self._initial_targets)
+        mujoco.mj_forward(self.model, self.data)
+        for _ in range(120):
             mujoco.mj_step(self.model, self.data)
-        return self.observe()
+        return self.observe(self._initial_targets, True)
 
-    def step(self, moving_targets: list[np.ndarray]) -> dict[str, np.ndarray]:
-        for mocap_id, target in zip(self._moving_mocap_ids, moving_targets):
-            self.data.mocap_pos[mocap_id] = target
+    def step(self, time_s: float) -> dict[str, np.ndarray]:
+        targets = self._targets_for_time(time_s)
+        grasp_active = time_s < self._release_time
+        self._set_grasp_active(grasp_active)
+        self._set_robot_targets(targets)
         inner_steps = max(1, round(self.config.control_dt / self.config.timestep))
         for _ in range(inner_steps):
             mujoco.mj_step(self.model, self.data)
-        return self.observe()
+        return self.observe(targets, grasp_active)
 
-    def observe(self) -> dict[str, np.ndarray]:
+    def observe(self, target_pos: np.ndarray, grasp_active: bool) -> dict[str, np.ndarray]:
         renderer = self._renderer_instance()
         renderer.update_scene(self.data, camera=self.camera_name)
         rgb = renderer.render().copy()
@@ -227,34 +367,48 @@ class FoldClothEnv:
         return {
             "rgb": rgb,
             "depth": depth,
-            "qpos": self.data.qpos.copy(),
-            "qvel": self.data.qvel.copy(),
-            "moving_gripper_pos": self.data.mocap_pos[self._moving_mocap_ids].copy(),
-            "holder_pos": self.data.mocap_pos[self._holder_mocap_ids].copy(),
+            "sim_qpos": self.data.qpos.copy(),
+            "sim_qvel": self.data.qvel.copy(),
+            "robot_qpos": self.data.qpos[self._robot_qpos_ids].copy(),
+            "robot_qvel": self.data.qvel[self._robot_qvel_ids].copy(),
+            "robot_ee_pos": self.data.xpos[self._robot_body_ids].copy(),
+            "robot_target_pos": np.asarray(target_pos, dtype=np.float64).copy(),
+            "cloth_vertex_pos": self.data.xpos[self._cloth_body_ids].copy(),
+            "grasp_active": np.asarray([1.0 if grasp_active else 0.0], dtype=np.float32),
         }
 
     def rollout(self) -> dict[str, np.ndarray]:
         self.reset()
         n_steps = int(round(self.config.duration / self.config.control_dt))
 
-        rgb, depth, qpos, qvel, moving_pos, holder_pos = [], [], [], [], [], []
+        buffers: dict[str, list[np.ndarray]] = {
+            "rgb": [],
+            "depth": [],
+            "sim_qpos": [],
+            "sim_qvel": [],
+            "robot_qpos": [],
+            "robot_qvel": [],
+            "robot_ee_pos": [],
+            "robot_target_pos": [],
+            "cloth_vertex_pos": [],
+            "grasp_active": [],
+        }
         for step_idx in range(n_steps):
-            target = self._path_target(step_idx / max(1, n_steps - 1))
-            obs = self.step(target)
-            rgb.append(obs["rgb"])
-            depth.append(obs["depth"])
-            qpos.append(obs["qpos"])
-            qvel.append(obs["qvel"])
-            moving_pos.append(obs["moving_gripper_pos"])
-            holder_pos.append(obs["holder_pos"])
+            obs = self.step(step_idx * self.config.control_dt)
+            for key, value in obs.items():
+                buffers[key].append(value)
 
         return {
-            "rgb": np.asarray(rgb, dtype=np.uint8),
-            "depth": np.asarray(depth, dtype=np.float32),
-            "qpos": np.asarray(qpos, dtype=np.float32),
-            "qvel": np.asarray(qvel, dtype=np.float32),
-            "moving_gripper_pos": np.asarray(moving_pos, dtype=np.float32),
-            "holder_pos": np.asarray(holder_pos, dtype=np.float32),
+            "rgb": np.asarray(buffers["rgb"], dtype=np.uint8),
+            "depth": np.asarray(buffers["depth"], dtype=np.float32),
+            "sim_qpos": np.asarray(buffers["sim_qpos"], dtype=np.float32),
+            "sim_qvel": np.asarray(buffers["sim_qvel"], dtype=np.float32),
+            "robot_qpos": np.asarray(buffers["robot_qpos"], dtype=np.float32),
+            "robot_qvel": np.asarray(buffers["robot_qvel"], dtype=np.float32),
+            "robot_ee_pos": np.asarray(buffers["robot_ee_pos"], dtype=np.float32),
+            "robot_target_pos": np.asarray(buffers["robot_target_pos"], dtype=np.float32),
+            "cloth_vertex_pos": np.asarray(buffers["cloth_vertex_pos"], dtype=np.float32),
+            "grasp_active": np.asarray(buffers["grasp_active"], dtype=np.float32),
         }
 
 
@@ -272,11 +426,15 @@ def save_rollout(
         obs = f.create_group("observations")
         obs.create_dataset("rgb", data=rollout["rgb"], compression="gzip", compression_opts=4)
         obs.create_dataset("depth", data=rollout["depth"], compression="gzip", compression_opts=4)
-        obs.create_dataset("cloth_qpos", data=rollout["qpos"], compression="gzip", compression_opts=4)
-        obs.create_dataset("cloth_qvel", data=rollout["qvel"], compression="gzip", compression_opts=4)
+        obs.create_dataset("sim_qpos", data=rollout["sim_qpos"], compression="gzip", compression_opts=4)
+        obs.create_dataset("sim_qvel", data=rollout["sim_qvel"], compression="gzip", compression_opts=4)
+        obs.create_dataset("robot_qpos", data=rollout["robot_qpos"], compression="gzip", compression_opts=4)
+        obs.create_dataset("robot_qvel", data=rollout["robot_qvel"], compression="gzip", compression_opts=4)
+        obs.create_dataset("robot_ee_pos", data=rollout["robot_ee_pos"], compression="gzip", compression_opts=4)
+        obs.create_dataset("cloth_vertex_pos", data=rollout["cloth_vertex_pos"], compression="gzip", compression_opts=4)
         actions = f.create_group("actions")
-        actions.create_dataset("moving_gripper_pos", data=rollout["moving_gripper_pos"], compression="gzip", compression_opts=4)
-        actions.create_dataset("holder_pos", data=rollout["holder_pos"], compression="gzip", compression_opts=4)
+        actions.create_dataset("robot_target_pos", data=rollout["robot_target_pos"], compression="gzip", compression_opts=4)
+        actions.create_dataset("grasp_active", data=rollout["grasp_active"], compression="gzip", compression_opts=4)
         meta = f.create_group("metadata")
         meta.attrs["task_name"] = (config.output or {}).get("task_name", "fold_cloth")
         meta.attrs["fps"] = int(config.fps)
@@ -289,8 +447,8 @@ def save_rollout(
         meta.attrs["cloth_thickness"] = float(config.cloth["thickness"])
         meta.attrs["cloth_young"] = float(config.cloth["young"])
         meta.attrs["cloth_poisson"] = float(config.cloth["poisson"])
-        meta.attrs["cloth_damping"] = float(config.cloth["damping"])
+        meta.attrs["cloth_shell_plugin"] = "mujoco.elasticity.shell"
+        meta.attrs["robot_type"] = "dual_position_actuated_cartesian_end_effectors"
 
     imageio.mimsave(video_path, list(rollout["rgb"]), fps=config.fps)
     return h5_path, video_path
-

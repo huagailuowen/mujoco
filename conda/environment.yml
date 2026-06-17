@@ -11,6 +11,5 @@ dependencies:
   - imageio-ffmpeg
   - pip:
       - -i https://pypi.tuna.tsinghua.edu.cn/simple
-      - mujoco>=3.2.6,<4
+      - mujoco==3.2.6
       - -e .
-

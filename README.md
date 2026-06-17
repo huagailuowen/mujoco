@@ -1,6 +1,6 @@
-# MuJoCo Flexible-Line Environments
+# MuJoCo Flexible-Object Environments
 
-This directory is a standalone MuJoCo simulation environment for flexible line, cable, and rope-like tasks.
+This directory is a standalone MuJoCo simulation environment for flexible line, cable, rope-like, and shell-cloth manipulation tasks.
 
 Path:
 
@@ -8,7 +8,9 @@ Path:
 /mnt/sda/cy/shared_project/TTTdynamics/sim_envs/MuJoCo
 ```
 
-The first target is configurable flexible-line dynamics: line length, radius, density, damping, friction, bend stiffness, twist stiffness, table friction, solver settings, and camera RGB-D output. This is intended to replace hinge-driven RoboTwin cloth placeholders for deformable-line data collection.
+The environments are intended to replace hinge-driven RoboTwin placeholders when the object physics must matter. The line task uses MuJoCo cable dynamics. The cloth task uses `mujoco.elasticity.shell`, flex edge constraints, table contact, and position-actuated robot end-effectors welded to cloth grasp vertices during the grasp phase.
+
+The fold-cloth setup follows the same structure as existing MuJoCo cloth manipulation examples such as `benchmarking_cloth`: shell cloth, edge equality, high-friction table contact, corner/edge grasp constraints, and scripted quasi-static folding trajectories. This repo keeps the setup self-contained and does not vendor external assets.
 
 ## Environment Setup
 
@@ -26,6 +28,8 @@ env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
   uv pip install -e .
 ```
 
+The fold-cloth environment is pinned to `mujoco==3.2.6`. This is intentional: the local `3.9.0` wheel only exposed `mujoco.elasticity.cable`, while `3.2.6` includes `mujoco.elasticity.shell`, which is needed to reproduce the existing cloth-manipulation configuration style.
+
 Conda fallback:
 
 ```bash
@@ -38,7 +42,7 @@ env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
 
 GitHub operations are the only place where using the usual proxy is allowed.
 
-## Smoke Test
+## Flexible-Line Smoke Test
 
 ```bash
 cd /mnt/sda/cy/shared_project/TTTdynamics/sim_envs/MuJoCo
@@ -62,7 +66,36 @@ The HDF5 file stores:
 - `actions/gripper_pos`: scripted gripper target positions
 - `metadata/*`: camera and physics metadata
 
+## Robot Fold-Cloth Demo
+
+```bash
+cd /mnt/sda/cy/shared_project/TTTdynamics/sim_envs/MuJoCo
+MUJOCO_GL=egl .venv/bin/python examples/run_fold_cloth_demo.py \
+  --config configs/fold_cloth_medium.yml \
+  --output outputs/fold_cloth_medium_robot
+```
+
+Expected outputs:
+
+```text
+outputs/fold_cloth_medium_robot/episode0.hdf5
+outputs/fold_cloth_medium_robot/episode0.mp4
+```
+
+The medium config is 5.8 seconds at 50 FPS, so the demo should produce 290 frames. The two robot end-effectors grip the right cloth edge, lift, fold across the center line, lower, release the weld constraints, and then lift away while the cloth settles.
+
+The HDF5 file stores:
+
+- `observations/rgb`: RGB frames, shape `(T, H, W, 3)`
+- `observations/depth`: depth frames, shape `(T, H, W)`
+- `observations/sim_qpos` and `observations/sim_qvel`: full MuJoCo state snapshots
+- `observations/robot_qpos` and `observations/robot_qvel`: six Cartesian robot joint states
+- `observations/robot_ee_pos`: actual end-effector positions
+- `observations/cloth_vertex_pos`: cloth vertex world positions
+- `actions/robot_target_pos`: scripted robot target positions
+- `actions/grasp_active`: whether the cloth weld grasp is active
+- `metadata/cloth_shell_plugin`: `mujoco.elasticity.shell`
+
 ## Why MuJoCo
 
-MuJoCo is a better fit than RoboTwin for flexible line/cable dynamics because the object is simulated as a deformable or articulated physical object rather than being closed by task code. This project starts with a cable-style line and a moving gripper proxy, then can be extended to real robot arms, 12D affordance metadata, and LeRobot conversion.
-
+MuJoCo is a better fit than RoboTwin for flexible line/cable/cloth dynamics because the object is simulated as a deformable physical object rather than being closed by task code. This project now has both cable-style line dynamics and a shell-cloth folding demo with robot end-effectors, and can be extended to concrete robot URDFs, 12D affordance metadata, and LeRobot conversion.
