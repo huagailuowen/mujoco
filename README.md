@@ -90,6 +90,10 @@ The medium config is 5.8 seconds at 50 FPS, so the demo should produce 290 frame
 
 `configs/fold_cloth_thick_stiff.yml` increases physical thickness instead. This makes the sheet behavior more visually distinct and more plate-like, while keeping Young's modulus lower to avoid the severe startup bounce of the earlier over-hard stress test.
 
+`configs/fold_cloth_thick_stiff_light.yml` keeps the thick-stiff shell parameters but reduces total cloth mass to one tenth. It is useful for checking how much inertial weight changes the same scripted fold.
+
+`configs/fold_cloth_coarse_stiff.yml` reduces the cloth grid from 17x13 vertices to 9x7 vertices. This cuts the quad count from 192 to 48, roughly a 4x reduction, making the sheet visibly coarser and more resistant to local bending. More aggressive 6x5 and 7x5 grids were tested but are unstable with the current shell-cloth and welded-grasp setup.
+
 The HDF5 file stores:
 
 - `observations/rgb`: RGB frames, shape `(T, H, W, 3)`
