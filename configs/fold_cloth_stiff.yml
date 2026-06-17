@@ -8,20 +8,20 @@ fps: 50
 
 physics:
   gravity: [0.0, 0.0, -9.81]
-  solver_iterations: 180
-  solver_ls_iterations: 60
-  table_friction: [1.35, 0.02, 0.0003]
+  solver_iterations: 240
+  solver_ls_iterations: 80
+  table_friction: [1.15, 0.015, 0.0002]
 
 cloth:
   size: [0.32, 0.22]
   grid: [17, 13]
-  mass: 0.11
+  mass: 0.14
   radius: 0.004
-  thickness: 0.0011
-  young: 85000.0
-  poisson: 0.40
-  edge_damping: 1.2
-  friction: [1.35, 0.02, 0.0003]
+  thickness: 0.0022
+  young: 280000.0
+  poisson: 0.34
+  edge_damping: 3.0
+  friction: [1.15, 0.015, 0.0002]
   color: [0.20, 0.32, 0.86, 1.0]
 
 gripper:
@@ -33,9 +33,9 @@ gripper:
 
 robot:
   grasp_y_fraction: [0.25, 0.75]
-  kp: 1000.0
-  joint_damping: 9.0
-  joint_armature: 0.025
+  kp: 1250.0
+  joint_damping: 12.0
+  joint_armature: 0.035
   x_range: [-0.52, 0.12]
   y_range: [-0.08, 0.08]
   z_range: [-0.006, 0.26]

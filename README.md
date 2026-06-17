@@ -84,6 +84,8 @@ outputs/fold_cloth_medium_robot/episode0.mp4
 
 The medium config is 5.8 seconds at 50 FPS, so the demo should produce 290 frames. The two robot end-effectors grip the right cloth edge, lift, fold across the center line, lower, release the weld constraints, and then lift away while the cloth settles.
 
+`configs/fold_cloth_soft.yml` and `configs/fold_cloth_stiff.yml` intentionally use much more extreme shell parameters than the medium config. The soft variant lowers Young's modulus, thickness, and edge damping so the cloth collapses and wrinkles. The stiff variant raises Young's modulus, thickness, damping, and solver iterations so the cloth behaves more like a resistant sheet.
+
 The HDF5 file stores:
 
 - `observations/rgb`: RGB frames, shape `(T, H, W, 3)`
