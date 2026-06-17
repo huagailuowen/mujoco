@@ -88,6 +88,8 @@ The medium config is 5.8 seconds at 50 FPS, so the demo should produce 290 frame
 
 `configs/fold_cloth_very_stiff.yml` raises Young's modulus further while keeping the sheet thin enough to avoid the startup spring-board artifact. Use it when testing a more resistant cloth without returning to the unstable stress-test parameters.
 
+`configs/fold_cloth_thick_stiff.yml` increases physical thickness instead. This makes the sheet behavior more visually distinct and more plate-like, while keeping Young's modulus lower to avoid the severe startup bounce of the earlier over-hard stress test.
+
 The HDF5 file stores:
 
 - `observations/rgb`: RGB frames, shape `(T, H, W, 3)`
